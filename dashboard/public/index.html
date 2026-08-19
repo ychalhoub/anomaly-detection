@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Network Anomaly Detection — SMB Security Monitor</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #10b981;
+    --low: #3fb950;
+    --medium: #d29922;
+    --high: #f0883e;
+    --critical: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+  }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .status { font-size: 12px; color: var(--accent); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .card .value { font-size: 24px; font-weight: 600; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 13px;
+  }
+  th, td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  tr:last-child td { border-bottom: none; }
+  tr.new-row { animation: fadein 0.4s ease; }
+  @keyframes fadein { from { background: rgba(16,185,129,0.15); } to { background: transparent; } }
+  .explanation { color: var(--muted); font-size: 12px; font-style: italic; max-width: 320px; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge.low { background: rgba(63,185,80,0.15); color: var(--low); }
+  .badge.medium { background: rgba(210,153,34,0.15); color: var(--medium); }
+  .badge.high { background: rgba(240,136,62,0.15); color: var(--high); }
+  .badge.critical { background: rgba(248,81,73,0.15); color: var(--critical); }
+
+  .controls { margin-bottom: 12px; display: flex; gap: 8px; }
+  button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.active { background: var(--accent); color: #04120b; border-color: var(--accent); }
+
+  .feed-wrapper { max-height: 480px; overflow-y: auto; border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Network Anomaly Detection</h1>
+    <div class="subtitle">Low-cost traffic monitoring for resource-constrained small businesses</div>
+  </div>
+  <div class="status"><span class="dot"></span> Live feed simulating traffic</div>
+</header>
+
+<div class="summary" id="summary"></div>
+
+<div class="controls">
+  <button id="filterAll" class="active">All flows</button>
+  <button id="filterAnomalies">Flagged only</button>
+  <button id="pauseBtn">Pause feed</button>
+</div>
+
+<div class="feed-wrapper">
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Source</th>
+        <th>Destination</th>
+        <th>Packets</th>
+        <th>Duration (µs)</th>
+        <th>Anomaly Score</th>
+        <th>Severity</th>
+        <th>Why flagged</th>
+      </tr>
+    </thead>
+    <tbody id="feedBody"></tbody>
+  </table>
+</div>
+
+<script>
+let anomaliesOnly = false;
+let paused = false;
+let rows = [];
+const MAX_ROWS = 40;
+
+async function loadSummary() {
+  const res = await fetch("/api/summary");
+  const data = await res.json();
+  const flagRate = ((data.flaggedCount / data.totalFlows) * 100).toFixed(1);
+  document.getElementById("summary").innerHTML = `
+    <div class="card"><div class="label">Total flows scored</div><div class="value">${data.totalFlows}</div></div>
+    <div class="card"><div class="label">Flagged anomalous</div><div class="value">${data.flaggedCount}</div></div>
+    <div class="card"><div class="label">Flag rate</div><div class="value">${flagRate}%</div></div>
+    <div class="card"><div class="label">Model ROC-AUC</div><div class="value">${data.metrics.rocAuc.toFixed(3)}</div></div>
+  `;
+}
+
+function renderRows() {
+  const filtered = anomaliesOnly ? rows.filter(r => r.predictedAnomaly) : rows;
+  const body = document.getElementById("feedBody");
+  body.innerHTML = filtered.slice(0, MAX_ROWS).map((r, i) => `
+    <tr class="${i === 0 ? 'new-row' : ''}">
+      <td>${new Date().toLocaleTimeString()}</td>
+      <td>${r.sourceIp}</td>
+      <td>${r.destIp}</td>
+      <td>${r.packets}</td>
+      <td>${Math.round(r.flowDuration)}</td>
+      <td>${r.anomalyScore}</td>
+      <td><span class="badge ${r.severity}">${r.severity}</span></td>
+      <td class="explanation">${r.explanation || (r.predictedAnomaly ? '' : '—')}</td>
+    </tr>
+  `).join("");
+}
+
+async function pollLive() {
+  if (paused) return;
+  const res = await fetch("/api/live?batch=3");
+  const data = await res.json();
+  rows = [...data.flows.reverse(), ...rows].slice(0, 200);
+  renderRows();
+}
+
+document.getElementById("filterAll").onclick = () => {
+  anomaliesOnly = false;
+  document.getElementById("filterAll").classList.add("active");
+  document.getElementById("filterAnomalies").classList.remove("active");
+  renderRows();
+};
+document.getElementById("filterAnomalies").onclick = () => {
+  anomaliesOnly = true;
+  document.getElementById("filterAnomalies").classList.add("active");
+  document.getElementById("filterAll").classList.remove("active");
+  renderRows();
+};
+document.getElementById("pauseBtn").onclick = (e) => {
+  paused = !paused;
+  e.target.textContent = paused ? "Resume feed" : "Pause feed";
+};
+
+loadSummary();
+pollLive();
+setInterval(pollLive, 1200);
+</script>
+
+</body>
+</html>

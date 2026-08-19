@@ -1,0 +1,7 @@
+node_modules/
+data/raw/
+data/processed/
+models/
+dashboard/server.log
+*.pyc
+__pycache__/
